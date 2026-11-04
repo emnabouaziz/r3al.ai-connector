@@ -1,0 +1,1 @@
+"""Quality report generation."""

@@ -1,0 +1,42 @@
+# End-to-end demo configuration: runs the whole pipeline on FakeConnector.
+# The production sources live in config.production.yaml.
+# Shortcuts taken here are listed in FAKES.md.
+seed: 42
+domains: [claims, policies, billing, onboarding, complaints, compliance]
+languages: [nl, fr, en]
+
+processing:
+  taxonomy_path: ${TAXONOMY_PATH:-./src/taxonomy.yaml}
+  language_min_chars: 40
+  domain_threshold: 0.15
+  domain_margin: 0.05
+
+clean:
+  min_chars: 20
+
+anonymize:
+  pii_types: [person_name, email, phone, iban, national_id, address, policy_number]
+
+split:
+  eval_ratio: 0.2
+  # Floors scaled down for a 60-document fake corpus (production: 25 / 5).
+  eval_floor_per_domain: 2
+  eval_floor_per_cell: 1
+  max_share_per_domain: 0.35
+
+verify:
+  near_duplicate_threshold: 0.9
+
+build:
+  system_prompt: >-
+    You are a customer-support assistant for a Belgian insurer. Answer in the
+    customer's language (Dutch, French or English), politely and precisely.
+
+sources:
+  - name: fake_demo
+    type: fake
+    config:
+      seed: 42
+
+output:
+  dir: ./out

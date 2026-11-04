@@ -1,0 +1,16 @@
+# Secrets
+.env
+
+# Pipeline outputs and generated data
+out/
+data/generated/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.mypy_cache/
+.pytest_cache/

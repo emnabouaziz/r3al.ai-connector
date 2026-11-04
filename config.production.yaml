@@ -1,0 +1,79 @@
+# Production configuration. Requires POSTGRES_DSN (see .env.example) and the
+# sql / files / email connectors, which are not implemented yet.
+seed: 42
+domains: [claims, policies, billing, onboarding, complaints, compliance]
+languages: [nl, fr, en]
+
+processing:
+  taxonomy_path: ${TAXONOMY_PATH:-./src/taxonomy.yaml}
+  language_min_chars: 40
+  domain_threshold: 0.15
+  domain_margin: 0.05
+
+clean:
+  min_chars: 20
+
+anonymize:
+  pii_types: [person_name, email, phone, iban, national_id, address, policy_number]
+
+split:
+  eval_ratio: 0.2
+  eval_floor_per_domain: 25
+  eval_floor_per_cell: 5
+  max_share_per_domain: 0.35
+
+verify:
+  near_duplicate_threshold: 0.9
+
+build:
+  system_prompt: >-
+    You are a customer-support assistant for a Belgian insurer. Answer in the
+    customer's language (Dutch, French or English), politely and precisely.
+
+sources:
+  - name: crm_postgres
+    type: sql
+    config:
+      dsn: ${POSTGRES_DSN}
+      # One row with non-empty text = one document. Rows sharing
+      # group_prefix + group_key form one group (never split train/eval).
+      # customers is reference data only (pure PII, no free text): not ingested.
+      tables:
+        claims:
+          id: claim_id
+          text: [description]
+          group_key: claim_id
+          group_prefix: claim
+          meta: [claim_number, status, incident_date]
+        claim_notes:
+          id: note_id
+          text: [body]
+          group_key: claim_id
+          group_prefix: claim
+          meta: [author_type, created_at]
+        policies:
+          id: policy_id
+          text: [coverage_summary]
+          group_key: policy_id
+          group_prefix: policy
+          meta: [policy_number, product]
+        invoices:
+          id: invoice_id
+          text: [customer_note]
+          group_key: invoice_id
+          group_prefix: invoice
+          meta: [invoice_number, status]
+  - name: knowledge_docs
+    type: files
+    enabled: false  # connector not implemented yet
+    config:
+      root: ${DOCS_DIR:-./data/documents}
+  - name: support_mailbox
+    type: email
+    enabled: false  # connector not implemented yet
+    config:
+      csv_path: ${TICKETS_CSV:-./data/tickets/tickets_export.csv}
+      eml_dir: ${EML_DIR:-./data/tickets/emails}
+
+output:
+  dir: ./out

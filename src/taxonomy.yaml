@@ -1,0 +1,239 @@
+# Domain taxonomy for keyword-based classification.
+#
+# Structure: domains -> <domain> -> <language> -> <term>: <weight>
+# Keys and domain names are English. Terms are multilingual on purpose:
+# they must match Dutch / French / English ingested content.
+#
+# Terms are normalised the same way as the text (lowercase, accents
+# stripped, simple trailing-"s" plurals removed), so write them naturally.
+# Multi-word terms are matched as whole token sequences, longest first, so
+# "algemene voorwaarden" is never double-counted with a shorter term.
+#
+# Weight guide:
+#   3.0  strongly discriminating (ombudsman, aanrijdingsformulier, RGPD)
+#   2.0-2.5  clearly domain-specific
+#   1.0-1.5  indicative but shared with other contexts
+#   0.3-0.5  generic (dossier, polis, amount)
+
+domains:
+  claims:
+    nl:
+      schade: 2.0
+      schadegeval: 2.5
+      schadeaangifte: 3.0
+      schadeclaim: 2.5
+      schadedossier: 2.5
+      schadevergoeding: 2.0
+      aangifte: 1.5
+      expert: 1.0
+      expertise: 1.5
+      vergoeding: 1.5
+      aanrijdingsformulier: 3.0
+      ongeval: 1.5
+      herstelling: 1.0
+      dossier: 0.3
+    fr:
+      sinistre: 2.5
+      declaration de sinistre: 3.0
+      declaration: 1.0
+      expertise: 1.5
+      expert: 1.0
+      indemnisation: 2.0
+      indemnite: 1.5
+      constat: 2.0
+      constat amiable: 3.0
+      accident: 1.5
+      degat: 1.5
+      dossier: 0.3
+    en:
+      claim: 2.0
+      insurance claim: 2.5
+      loss adjuster: 3.0
+      adjuster: 2.0
+      assessor: 1.5
+      expert: 1.0
+      damage: 1.5
+      compensation: 1.5
+      accident report: 2.5
+      accident: 1.5
+      case number: 0.3
+
+  policies:
+    nl:
+      polis: 0.5
+      waarborg: 2.0
+      waarborgen: 2.0
+      dekking: 2.0
+      gedekt: 1.5
+      uitsluiting: 2.5
+      uitsluitingen: 2.5
+      vrijstelling: 2.5
+      algemene voorwaarden: 3.0
+      bijzondere voorwaarden: 3.0
+      verzekerd bedrag: 2.0
+    fr:
+      police: 0.5
+      garantie: 2.0
+      couverture: 2.0
+      couvert: 1.5
+      exclusion: 2.5
+      franchise: 2.5
+      conditions generales: 3.0
+      conditions particulieres: 3.0
+      plafond: 1.5
+    en:
+      policy: 0.5
+      coverage: 2.0
+      cover: 1.0
+      covered: 1.5
+      exclusion: 2.5
+      deductible: 2.5
+      excess: 1.5
+      general terms: 2.5
+      terms and conditions: 2.5
+      policy wording: 2.5
+      sum insured: 2.0
+
+  billing:
+    nl:
+      premie: 2.0
+      factuur: 2.0
+      facturen: 2.0
+      herinnering: 1.5
+      betalingsherinnering: 3.0
+      aanmaning: 2.5
+      domiciliering: 3.0
+      betaling: 1.5
+      terugbetaling: 2.0
+      overschrijving: 2.0
+      rekeningnummer: 1.5
+      bedrag: 0.5
+    fr:
+      prime: 2.0
+      facture: 2.0
+      rappel: 1.5
+      rappel de paiement: 3.0
+      mise en demeure: 2.5
+      domiciliation: 3.0
+      paiement: 1.5
+      remboursement: 2.0
+      virement: 2.0
+      echeance: 1.5
+      montant: 0.5
+    en:
+      premium: 2.0
+      invoice: 2.0
+      bill: 1.0
+      billing: 2.0
+      reminder: 1.0
+      payment reminder: 3.0
+      direct debit: 3.0
+      payment: 1.5
+      refund: 2.0
+      reimbursement: 1.5
+      bank transfer: 2.0
+      overdue: 2.0
+      amount: 0.5
+
+  onboarding:
+    nl:
+      offerte: 2.5
+      prijsofferte: 3.0
+      onderschrijving: 3.0
+      onderschrijven: 2.5
+      nieuwe polis: 2.5
+      bijvoegsel: 3.0
+      opzegging: 2.5
+      opzeggen: 2.5
+      adreswijziging: 3.0
+      adres wijzigen: 2.5
+      nieuwe klant: 2.0
+    fr:
+      devis: 2.5
+      souscription: 3.0
+      souscrire: 2.5
+      avenant: 3.0
+      resiliation: 2.5
+      resilier: 2.5
+      changement d'adresse: 3.0
+      demenagement: 1.5
+      nouveau client: 2.0
+      adhesion: 1.5
+    en:
+      quote: 2.5
+      quotation: 2.5
+      new policy: 2.5
+      sign up: 2.0
+      subscribe: 2.0
+      endorsement: 2.5
+      amendment: 1.5
+      cancellation: 2.5
+      cancel: 2.0
+      change of address: 3.0
+      moving house: 1.5
+      new customer: 2.0
+
+  complaints:
+    nl:
+      klacht: 2.5
+      klachten: 2.5
+      ombudsman: 3.0
+      ombudsdienst: 3.0
+      ontevreden: 2.0
+      escalatie: 2.5
+      onaanvaardbaar: 1.5
+      teleurgesteld: 1.5
+      bezwaar: 1.5
+    fr:
+      plainte: 2.5
+      reclamation: 2.5
+      mediateur: 3.0
+      ombudsman: 3.0
+      insatisfait: 2.0
+      insatisfaite: 2.0
+      mecontent: 2.0
+      mecontente: 2.0
+      escalade: 2.5
+      inacceptable: 1.5
+      decu: 1.5
+    en:
+      complaint: 2.5
+      complain: 2.0
+      ombudsman: 3.0
+      escalation: 2.5
+      escalate: 2.0
+      dissatisfied: 2.0
+      unhappy: 1.5
+      unacceptable: 1.5
+      disappointed: 1.5
+
+  compliance:
+    nl:
+      avg: 3.0
+      gdpr: 3.0
+      persoonsgegevens: 3.0
+      gegevensbescherming: 3.0
+      inzagerecht: 3.0
+      recht op inzage: 3.0
+      toestemming: 2.0
+      privacy: 2.0
+      ipid: 3.0
+    fr:
+      rgpd: 3.0
+      donnees personnelles: 3.0
+      protection des donnees: 3.0
+      droit d'acces: 3.0
+      droit a l'oubli: 3.0
+      consentement: 2.0
+      vie privee: 2.0
+      ipid: 3.0
+    en:
+      gdpr: 3.0
+      personal data: 3.0
+      data protection: 3.0
+      right of access: 3.0
+      subject access request: 3.0
+      right to be forgotten: 3.0
+      consent: 2.0
+      privacy: 2.0
+      ipid: 3.0
