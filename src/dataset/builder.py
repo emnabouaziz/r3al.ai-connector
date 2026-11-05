@@ -1,60 +1,97 @@
-"""Convert records into the client's chat fine-tuning format."""
+"""Example construction: dispatch by record KIND, then the client's chat format.
+
+Dispatch uses the record's kind carried in metadata, never its source_type:
+  thread -> tickets builder (conversations -> extracted pairs)
+  case   -> facts builder (structured case facts -> grounded factual pairs)
+  chunk  -> documents builder (reference knowledge -> grounded questions)
+
+Built examples become "example records" (one per Q/A pair) so the existing
+splitter and leakage checks work on them unchanged: group_id is the
+thread / document, so every pair of a thread lands on the same side.
+
+Output: the exact client schema, one JSON object per line
+  {"messages":[{"role":"system",...},{"role":"user",...},{"role":"assistant",...}],
+   "meta":{"domain":...,"language":...,"source_ids":[...]}}
+source_ids are the real RawDocument ids the example was built from.
+"""
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 
 from src.contracts import Record
+from src.dataset.builders import (
+    BuildCandidate,
+    BuildSettings,
+    ChunkBuilder,
+    ExampleBuilder,
+    FactsBuilder,
+    TicketThreadBuilder,
+)
+from src.dataset.question_gen import QuestionGenerator
+from src.dataset.system_prompt import SystemPrompts
 from src.fileio import write_text_atomic
 
-_WHITESPACE = re.compile(r"\s+")
+KIND_KEY = "kind"
+KIND_THREAD = "thread"
+KIND_CHUNK = "chunk"
+KIND_CASE = "case"
+KINDS = (KIND_THREAD, KIND_CASE, KIND_CHUNK)
+# Which builder handles which kind, as named in the report.
+BUILDER_NAMES = {KIND_THREAD: "tickets", KIND_CHUNK: "documents", KIND_CASE: "facts"}
 
 
-class BuildError(ValueError):
-    """A record cannot be turned into a training example."""
+def record_kind(record: Record) -> str:
+    kind = record.metadata.get(KIND_KEY)
+    return kind if kind in KINDS else KIND_CHUNK
 
 
-def _split_halves(text: str) -> tuple[str, str]:
-    """Cut at the whitespace closest to the middle (FAKE shortcut, see FAKES.md)."""
-    mid = len(text) // 2
-    cuts = [m.start() for m in _WHITESPACE.finditer(text)]
-    if not cuts:
-        raise BuildError("text_has_no_split_point")
-    cut = min(cuts, key=lambda i: (abs(i - mid), i))
-    user, assistant = text[:cut].strip(), text[cut:].strip()
-    if not user or not assistant:
-        raise BuildError("empty_half")
-    return user, assistant
+def make_builders(settings: BuildSettings, generator: QuestionGenerator | None = None) -> dict[str, ExampleBuilder]:
+    return {
+        KIND_THREAD: TicketThreadBuilder(settings),
+        KIND_CASE: FactsBuilder(settings),
+        KIND_CHUNK: ChunkBuilder(settings, generator),
+    }
 
 
-def record_to_example(record: Record, system_prompt: str) -> dict[str, Any]:
-    if record.domain is None:
-        raise BuildError("record_without_domain")
-    user, assistant = _split_halves(record.text)
+def build_record(record: Record, builders: dict[str, ExampleBuilder]) -> tuple[list[BuildCandidate], dict[str, int]]:
+    return builders[record_kind(record)].build([record])
+
+
+def candidate_to_record(candidate: BuildCandidate, example_id: str, kind: str) -> Record:
+    return Record(
+        id=example_id,
+        text=f"{candidate.user}\n\n{candidate.assistant}",  # what dedup and leakage checks compare
+        group_id=candidate.group_id,
+        source_id=candidate.source_ids[0],
+        source_type="example",
+        language=candidate.language,
+        domain=candidate.domain,
+        metadata={"user": candidate.user, "assistant": candidate.assistant,
+                  "source_ids": list(candidate.source_ids), KIND_KEY: kind},
+    )
+
+
+def to_chat_line(
+    user: str, assistant: str, domain: str, language: str, source_ids: list[str], system_prompt: str
+) -> dict[str, Any]:
     return {
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user},
             {"role": "assistant", "content": assistant},
         ],
-        "meta": {
-            "domain": record.domain,
-            "language": record.language,
-            "source_ids": [record.source_id],
-        },
+        "meta": {"domain": domain, "language": language, "source_ids": list(source_ids)},
     }
 
 
-def to_chat_format(records: list[Record], system_prompt: str) -> list[dict[str, Any]]:
-    """Exact format imposed by the client:
-    {"messages":[{"role":"system","content":...},
-                 {"role":"user","content":...},
-                 {"role":"assistant","content":...}],
-     "meta":{"domain":...,"language":...,"source_ids":[...]}}
-    For the fake connector: user = first half of the text, assistant =
-    second half (recorded in FAKES.md)."""
-    return [record_to_example(r, system_prompt) for r in records]
+def example_line(example: Record, prompts: SystemPrompts) -> dict[str, Any]:
+    if example.domain is None:
+        raise ValueError("example without a domain")
+    return to_chat_line(
+        str(example.metadata["user"]), str(example.metadata["assistant"]), example.domain,
+        example.language, list(example.metadata["source_ids"]), prompts.for_language(example.language),
+    )
 
 
 def write_jsonl(path: Path, examples: list[dict[str, Any]]) -> None:

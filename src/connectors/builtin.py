@@ -5,5 +5,7 @@ Adding a real connector = add its import here. The pipeline never changes.
 ``src.registry``.)
 """
 
+from src.connectors import email  # noqa: F401
 from src.connectors import fake  # noqa: F401
+from src.connectors import files  # noqa: F401
 from src.connectors import sql  # noqa: F401

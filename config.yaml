@@ -15,22 +15,36 @@ clean:
   min_chars: 20
 
 anonymize:
-  pii_types: [person_name, email, phone, iban, national_id, address, policy_number]
+  # Placeholders imposed by the client spec: [PERSON] [EMAIL] [PHONE] [IBAN] [NATIONAL_ID] [ADDRESS]
+  pii_types: [PERSON, EMAIL, PHONE, IBAN, NATIONAL_ID, ADDRESS]
+  ner_model: xx_ent_wiki_sm  # pinned in pyproject.toml, loaded offline
 
 split:
+  # Floors, minimums and ratios are counted in EXAMPLES; groups stay whole.
   eval_ratio: 0.2
-  # Floors scaled down for a 60-document fake corpus (production: 25 / 5).
+  # Scaled down for a 60-document fake corpus (production: 25 / 5 / 20).
   eval_floor_per_domain: 2
   eval_floor_per_cell: 1
   max_share_per_domain: 0.35
+  min_train_per_domain: 4  # examples; takes precedence over eval floors
+  eval_ratio_max: 0.30  # hard ceiling on eval / kept
 
 verify:
   near_duplicate_threshold: 0.9
 
 build:
-  system_prompt: >-
-    You are a customer-support assistant for a Belgian insurer. Answer in the
-    customer's language (Dutch, French or English), politely and precisely.
+  # System prompt: "You are the support assistant of <insurer_name> ...".
+  # The name comes from config only (synthetic placeholder by default).
+  insurer_name: ${INSURER_NAME:-Example Insurance SA}
+  # example_language: the system prompt is in the example's language (nl/fr/en),
+  # so the model learns to answer in the customer's language. Or: english.
+  system_prompt_language: example_language
+  # Rejection thresholds of the example builders (see the report's build table).
+  min_question_chars: 30
+  min_answer_chars: 40
+  max_placeholder_share: 0.12  # of the answer; real answers measured <= 0.09
+  min_chunk_chars: 80
+  max_answer_chars: 900
 
 sources:
   - name: fake_demo

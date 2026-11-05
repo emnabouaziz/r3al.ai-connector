@@ -17,7 +17,7 @@ from pathlib import Path
 import psycopg
 from dotenv import load_dotenv
 
-from src.synthetic.crm import CrmDataset, generate_crm
+from src.synthetic.crm import CrmDataset, generate_crm, write_pii_manifest
 
 logger = logging.getLogger("seed_crm")
 
@@ -59,6 +59,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--schema", default="db/schema.sql")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--reset", action="store_true", help="drop and recreate the CRM tables")
+    parser.add_argument(
+        "--manifest",
+        default="data/generated/pii_manifest.json",
+        help="ground-truth PII index of the injected values (git-ignored)",
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level="INFO", format="%(asctime)s level=%(levelname)s logger=%(name)s %(message)s")
 
@@ -70,6 +75,8 @@ def main(argv: list[str] | None = None) -> int:
 
     data = generate_crm(seed=args.seed)
     seed(dsn, Path(args.schema).read_text(encoding="utf-8"), data, args.reset)
+    n_values = write_pii_manifest(data, args.seed, args.manifest)
+    logger.info("manifest_written path=%s values=%d", args.manifest, n_values)
     logger.info(
         "seed_ok customers=%d policies=%d claims=%d claim_notes=%d invoices=%d texts=%d",
         len(data.customers), len(data.policies), len(data.claims),

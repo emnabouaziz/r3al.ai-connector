@@ -14,6 +14,8 @@ CREATE TABLE customers (
     iban             text        NOT NULL,
     language         char(2)     NOT NULL CHECK (language IN ('nl', 'fr', 'en')),
     city             text        NOT NULL,
+    street           text        NOT NULL,
+    postcode         char(4)     NOT NULL,
     created_at       date        NOT NULL
 );
 
@@ -32,15 +34,17 @@ CREATE TABLE claims (
     claim_id       integer PRIMARY KEY,
     claim_number   text    NOT NULL UNIQUE,
     policy_id      integer NOT NULL REFERENCES policies (policy_id),
+    claim_type     text    NOT NULL CHECK (claim_type IN ('car_accident', 'water_damage', 'burglary', 'liability', 'fire')),
     incident_date  date    NOT NULL,
-    status         text    NOT NULL CHECK (status IN ('open', 'in_review', 'closed')),
+    status         text    NOT NULL CHECK (status IN ('open', 'in_progress', 'closed', 'rejected')),
     description    text    NOT NULL
 );
 
 CREATE TABLE claim_notes (
     note_id      integer PRIMARY KEY,
     claim_id     integer   NOT NULL REFERENCES claims (claim_id),
-    author_type  text      NOT NULL CHECK (author_type IN ('customer', 'agent')),
+    -- customer: written by the customer; agent: written TO the customer; internal: staff only.
+    author_role  text      NOT NULL CHECK (author_role IN ('customer', 'agent', 'internal')),
     created_at   timestamp NOT NULL,
     body         text      NOT NULL
 );
@@ -53,7 +57,8 @@ CREATE TABLE invoices (
     due_date        date          NOT NULL,
     amount          numeric(10,2) NOT NULL,
     status          text          NOT NULL CHECK (status IN ('paid', 'unpaid', 'overdue')),
-    customer_note   text          -- free text, nullable
+    customer_note   text,         -- free text, nullable
+    agent_reply     text          -- customer-facing answer to customer_note, nullable
 );
 
 CREATE INDEX claim_notes_claim_id_idx ON claim_notes (claim_id);

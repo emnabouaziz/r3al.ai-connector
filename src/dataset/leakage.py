@@ -4,22 +4,14 @@ Both checks raise LeakageError: they are meant to stop the pipeline, not
 to emit warnings. Error messages carry ids and counts only, never content.
 """
 
-import hashlib
 import logging
 from collections.abc import Sequence
 
-import numpy as np
-import numpy.typing as npt
-
 from src.contracts import Record
-from src.processing.domain import normalize_tokens
+from src.processing.minhash import bands_for, jaccard, shingles, signature
 
 logger = logging.getLogger(__name__)
 
-SHINGLE_SIZE = 5  # character n-grams over normalised text
-NUM_PERM = 128
-_MERSENNE_PRIME = np.uint64((1 << 61) - 1)
-_MAX_HASH = np.uint64((1 << 32) - 1)
 _MAX_IDS_IN_MESSAGE = 20
 
 NearDuplicatePair = tuple[str, str, float]  # (train_record_id, eval_record_id, jaccard)
@@ -67,56 +59,12 @@ def assert_no_group_overlap(train: Sequence[Record], eval: Sequence[Record]) -> 
         )
 
 
-# --- MinHash / LSH -----------------------------------------------------------
-
-
-def _stable_u64(label: str) -> int:
-    return int.from_bytes(hashlib.sha256(label.encode()).digest()[:8], "little")
-
-
-_PERM_A = np.array(
-    [_stable_u64(f"a{i}") % (int(_MERSENNE_PRIME) - 1) + 1 for i in range(NUM_PERM)],
-    dtype=np.uint64,
-)
-_PERM_B = np.array(
-    [_stable_u64(f"b{i}") % int(_MERSENNE_PRIME) for i in range(NUM_PERM)], dtype=np.uint64
-)
-
-
-def _shingles(text: str) -> frozenset[str]:
-    norm = " ".join(normalize_tokens(text))
-    if not norm:
-        return frozenset()
-    if len(norm) <= SHINGLE_SIZE:
-        return frozenset({norm})
-    return frozenset(norm[i : i + SHINGLE_SIZE] for i in range(len(norm) - SHINGLE_SIZE + 1))
-
-
-def _signature(shingles: frozenset[str]) -> npt.NDArray[np.uint64]:
-    hv = np.array(
-        [
-            int.from_bytes(hashlib.blake2b(s.encode(), digest_size=4).digest(), "little")
-            for s in sorted(shingles)
-        ],
-        dtype=np.uint64,
-    )
-    # uint64 wrap-around on the product is intended (same scheme as datasketch).
-    with np.errstate(over="ignore"):
-        phv = ((hv[:, None] * _PERM_A + _PERM_B) % _MERSENNE_PRIME) & _MAX_HASH
-    sig: npt.NDArray[np.uint64] = phv.min(axis=0)
-    return sig
-
-
-def _bands_for(threshold: float) -> tuple[int, int]:
-    """Pick (bands, rows) so the LSH S-curve threshold sits below ``threshold``."""
-    for bands, rows in ((16, 8), (32, 4), (64, 2)):
-        if (1 / bands) ** (1 / rows) <= threshold - 0.1:
-            return bands, rows
-    return 128, 1
-
-
-def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
-    return len(a & b) / len(a | b)
+# --- MinHash / LSH (shared implementation) ---------------------------------
+# Kept under their historical private names for existing callers.
+_shingles = shingles
+_signature = signature
+_bands_for = bands_for
+_jaccard = jaccard
 
 
 def assert_no_near_duplicate_across_split(

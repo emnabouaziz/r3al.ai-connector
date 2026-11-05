@@ -11,11 +11,17 @@ so two texts of different groups never become near-duplicates (which would
 trip the blocking cross-split leakage check).
 """
 
+import json
 import random
+import string
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Final
+from pathlib import Path
+from typing import Any, Final
+
+from src.report.ground_truth_scan import normalise
+from src.synthetic.crm_replies import AGENTS, CLAIM_TYPES, reply_text
 
 Pool = dict[str, tuple[str, ...]]
 
@@ -31,19 +37,19 @@ _CUSTOMER_CLOSERS: Final[dict[str, tuple[str, ...]]] = {
         "Met vriendelijke groeten, {name}.",
         "Alvast bedankt, {name} ({phone}).",
         "Groeten, {name}. U kunt mij bereiken via {email}.",
-        "Vriendelijke groet, {name}.",
+        "Vriendelijke groet, {name}, {address}.",
     ),
     "fr": (
         "Cordialement, {name}.",
         "Merci d'avance, {name} ({phone}).",
         "Bien à vous, {name}. Vous pouvez me joindre à {email}.",
-        "Salutations, {name}.",
+        "Salutations, {name}, {address}.",
     ),
     "en": (
         "Kind regards, {name}.",
         "Thanks in advance, {name} ({phone}).",
         "Best regards, {name}. You can reach me at {email}.",
-        "Regards, {name}.",
+        "Regards, {name}, {address}.",
     ),
 }
 
@@ -77,7 +83,7 @@ POOLS: Final[dict[str, dict[str, Pool]]] = {
                 "Laat mij weten of u nog iets nodig hebt om het schadedossier af te ronden.",
                 "De herstelling kan pas starten na uw akkoord.",
                 "Ik ben bereikbaar op {phone} voor verdere vragen over de schade.",
-                "Het gaat nog steeds om de schade van {date}.",
+                "Mijn rijksregisternummer is {rrn}, als u dat nodig hebt voor het schadedossier.",
                 "Bedankt voor de snelle opvolging van mijn aangifte.",
             ),
         },
@@ -199,7 +205,7 @@ POOLS: Final[dict[str, dict[str, Pool]]] = {
                 "Dites-moi s'il vous manque encore quelque chose pour clôturer le dossier sinistre.",
                 "La réparation ne peut commencer qu'après votre accord.",
                 "Je reste joignable au {phone} pour toute question sur le sinistre.",
-                "Il s'agit toujours du sinistre du {date}.",
+                "Mon numéro de registre national est le {rrn}, si nécessaire pour le dossier sinistre.",
                 "Merci pour le suivi rapide de ma déclaration.",
             ),
         },
@@ -321,7 +327,7 @@ POOLS: Final[dict[str, dict[str, Pool]]] = {
                 "Let me know if you need anything else to close the claim.",
                 "The repair can only start after your approval.",
                 "I can be reached on {phone} for further questions about the damage.",
-                "This still concerns the damage of {date}.",
+                "My national register number is {rrn}, in case you need it for the claim.",
                 "Thank you for following up on my claim so quickly.",
             ),
         },
@@ -424,6 +430,11 @@ POOL_DOMAINS: Final[dict[str, str]] = {
     "complaint_note": "complaints",
     "policy_coverage": "policies",
     "invoice_note": "billing",
+    # Customer-facing agent replies (author_role "agent"), see crm_replies.py.
+    "claim_description_reply": "claims",
+    "claim_note_customer_reply": "claims",
+    "complaint_note_reply": "complaints",
+    "invoice_note_reply": "billing",
 }
 
 _FIRST_NAMES: Final[dict[str, tuple[str, ...]]] = {
@@ -440,6 +451,16 @@ _CITIES: Final[dict[str, tuple[str, ...]]] = {
     "nl": ("Gent", "Antwerpen", "Leuven", "Brugge", "Hasselt", "Mechelen"),
     "fr": ("Namur", "Liège", "Charleroi", "Mons", "Wavre", "Arlon"),
     "en": ("Brussels", "Brussels", "Leuven", "Waterloo"),
+}
+_STREETS: Final[dict[str, tuple[str, ...]]] = {
+    "nl": ("Kerkstraat", "Stationsstraat", "Molenstraat", "Dorpsstraat", "Nieuwstraat", "Kapelstraat"),
+    "fr": ("Rue de la Station", "Rue de l'Église", "Chaussée de Namur", "Rue du Moulin", "Avenue des Tilleuls"),
+    "en": ("Rue Royale", "Avenue Louise", "Boulevard Anspach", "Chaussée de Waterloo"),
+}
+_POSTCODES: Final[dict[str, int]] = {
+    "Gent": 9000, "Antwerpen": 2000, "Leuven": 3000, "Brugge": 8000, "Hasselt": 3500,
+    "Mechelen": 2800, "Namur": 5000, "Liège": 4000, "Charleroi": 6000, "Mons": 7000,
+    "Wavre": 1300, "Arlon": 6700, "Brussels": 1000, "Waterloo": 1410,
 }
 _PRODUCT_LABELS: Final[dict[str, dict[str, str]]] = {
     "nl": {"car": "autoverzekering", "home": "woningverzekering", "family_liability": "familiale verzekering"},
@@ -463,6 +484,8 @@ class Customer:
     iban: str
     language: str
     city: str
+    street: str
+    postcode: str
     created_at: date
 
 
@@ -483,6 +506,7 @@ class Claim:
     claim_id: int
     claim_number: str
     policy_id: int
+    claim_type: str  # car_accident | water_damage | burglary | liability | fire
     incident_date: date
     status: str
     description: str
@@ -492,7 +516,7 @@ class Claim:
 class ClaimNote:
     note_id: int
     claim_id: int
-    author_type: str
+    author_role: str  # customer | agent (customer-facing reply) | internal (never an answer)
     created_at: datetime
     body: str
 
@@ -507,6 +531,7 @@ class Invoice:
     amount: Decimal
     status: str
     customer_note: str | None
+    agent_reply: str | None = None  # customer-facing answer to customer_note
 
 
 @dataclass
@@ -518,6 +543,19 @@ class CrmDataset:
     invoices: list[Invoice] = field(default_factory=list)
     # "table:id" -> (pool name, language): ground truth for tests only.
     text_origin: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # "table:id" -> [(PII type, exact value as written)]: ground truth for recall.
+    pii_injected: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
+
+
+# Template slot -> PII type of the value it injects into free text.
+SLOT_PII_TYPES: Final[dict[str, str]] = {
+    "name": "PERSON",
+    "email": "EMAIL",
+    "phone": "PHONE",
+    "iban": "IBAN",
+    "rrn": "NATIONAL_ID",
+    "address": "ADDRESS",
+}
 
 
 # --- Generation ---------------------------------------------------------------
@@ -531,6 +569,8 @@ class _Composer:
     def __init__(self, rng: random.Random) -> None:
         self.rng = rng
         self.used: dict[tuple[str, str], set[tuple[int, int, int]]] = {}
+        self.last_pii: list[tuple[str, str]] = []  # PII injected by the last compose()
+        self.last_core = 0  # core index of the last compose(): which request was written
 
     def compose(self, pool_name: str, lang: str, slots: dict[str, str]) -> str:
         pool = POOLS[lang][pool_name]
@@ -549,9 +589,30 @@ class _Composer:
             raise PoolExhausted(f"pool {pool_name}/{lang} has no unused combination left")
         c, d, k = self.rng.choice(free)
         used.add((c, d, k))
+        self.last_core = c
         opener = self.rng.choice(openers)
         text = f"{opener}\n\n{cores[c]} {details[d]}\n\n{closers[k]}"
+        fields = [f for _, f, _, _ in string.Formatter().parse(text) if f]
+        self.last_pii = [(SLOT_PII_TYPES[f], slots[f]) for f in fields if f in SLOT_PII_TYPES]
         return text.format_map(slots)
+
+
+def valid_be_iban(rng: random.Random) -> str:
+    """Checksum-valid Belgian IBAN (national check + ISO 13616 mod 97)."""
+    first10 = f"{rng.randint(0, 999):03d}{rng.randint(0, 9_999_999):07d}"
+    national_check = int(first10) % 97 or 97
+    bban = f"{first10}{national_check:02d}"
+    check = 98 - int(bban + "111400") % 97  # "BE00" -> B=11, E=14, 00
+    return f"BE{check:02d} {bban[0:4]} {bban[4:8]} {bban[8:12]}"
+
+
+def valid_rrn(rng: random.Random) -> str:
+    """Checksum-valid Belgian national register number YY.MM.DD-XXX.CC."""
+    year = rng.randint(1950, 2006)
+    first9 = f"{year % 100:02d}{rng.randint(1, 12):02d}{rng.randint(1, 28):02d}{rng.randint(1, 997):03d}"
+    base = int(first9) if year < 2000 else int("2" + first9)
+    check = 97 - base % 97
+    return f"{first9[0:2]}.{first9[2:4]}.{first9[4:6]}-{first9[6:9]}.{check:02d}"
 
 
 def _weighted_language(rng: random.Random) -> str:
@@ -571,10 +632,10 @@ def _fmt_amount(rng: random.Random, low: int, high: int) -> str:
 def generate_crm(
     seed: int = 42,
     n_customers: int = 200,
-    n_claims: int = 150,
+    n_claims: int = 85,
     complaint_share: float = 0.3,
-    n_policy_summaries: int = 90,
-    n_invoice_notes: int = 110,
+    n_policy_summaries: int = 100,
+    n_invoice_notes: int = 60,
 ) -> CrmDataset:
     rng = random.Random(seed)
     composer = _Composer(rng)
@@ -593,15 +654,12 @@ def generate_crm(
                 last_name=last,
                 email=f"{email_local}{cid}@example.be",
                 phone=f"+32 4{rng.randint(70, 99)} {rng.randint(10, 99)} {rng.randint(10, 99)} {rng.randint(10, 99)}",
-                national_number=(
-                    f"{rng.randint(50, 99):02d}.{rng.randint(1, 12):02d}.{rng.randint(1, 28):02d}"
-                    f"-{rng.randint(100, 999)}.{rng.randint(10, 99)}"
-                ),
-                iban="BE{:02d} {:04d} {:04d} {:04d}".format(
-                    rng.randint(10, 99), rng.randint(0, 9999), rng.randint(0, 9999), rng.randint(0, 9999)
-                ),
+                national_number=valid_rrn(rng),
+                iban=valid_be_iban(rng),
                 language=lang,
-                city=rng.choice(_CITIES[lang]),
+                city=(city := rng.choice(_CITIES[lang])),
+                street=f"{rng.choice(_STREETS[lang])} {rng.randint(1, 180)}",
+                postcode=str(_POSTCODES[city]),
                 created_at=epoch - timedelta(days=rng.randint(30, 2000)),
             )
         )
@@ -614,6 +672,8 @@ def generate_crm(
             "email": cust.email,
             "iban": cust.iban,
             "city": cust.city,
+            "address": f"{cust.street}, {cust.postcode} {cust.city}",
+            "rrn": cust.national_number,
             "date": _fmt_date(epoch + timedelta(days=rng.randint(0, 600))),
             "amount": _fmt_amount(rng, 150, 9000),
             "plate": f"{rng.randint(1, 2)}-{''.join(rng.choices('ABCDEFGHJKLMNPRSTVWXYZ', k=3))}-{rng.randint(100, 999)}",
@@ -656,48 +716,84 @@ def generate_crm(
             text = composer.compose("policy_coverage", cust.language, slots)
             ds.policies[i] = Policy(**{**pol.__dict__, "coverage_summary": text})
             ds.text_origin[f"policies:{pol.policy_id}"] = ("policy_coverage", cust.language)
+            ds.pii_injected[f"policies:{pol.policy_id}"] = composer.last_pii
 
-    # Claims and their note threads.
+    # Claims and their notes. A case alternates realistically: the customer writes
+    # (description, follow-ups, complaints), an agent answers TO the customer
+    # (author_role "agent", tied to the request), and internal notes
+    # (author_role "internal") are interleaved but never answer anyone.
     note_id = 0
+    claim_status = ("open", "in_progress", "closed", "rejected")
     for claim_id in range(1, n_claims + 1):
         pol = rng.choice(ds.policies)
         cust, _ = policy_slots(pol)
         lang = cust.language
+        name = f"{cust.first_name} {cust.last_name}"
+        agent = rng.choice(AGENTS[lang])
         claim_no = f"CLM-{2024}-{claim_id * 13:05d}"
         incident = epoch + timedelta(days=rng.randint(0, 600))
         is_complaint = rng.random() < complaint_share
+        case_key = f"claims:{claim_id}"
+        injected = ds.pii_injected.setdefault(case_key, [])
 
         def claim_slots() -> dict[str, str]:
             s = slots_for(cust, policy_no=pol.policy_number, claim_no=claim_no)
             s["date"] = _fmt_date(incident)
             return s
 
+        description = composer.compose("claim_description", lang, claim_slots())
+        injected += composer.last_pii
+        description_core = composer.last_core
         ds.claims.append(
             Claim(
                 claim_id=claim_id,
                 claim_number=claim_no,
                 policy_id=pol.policy_id,
+                claim_type=CLAIM_TYPES[description_core],
                 incident_date=incident,
-                status=rng.choice(("open", "in_review", "closed")),
-                description=composer.compose("claim_description", lang, claim_slots()),
+                status=rng.choices(claim_status, weights=(3, 4, 3, 1))[0],
+                description=description,
             )
         )
-        ds.text_origin[f"claims:{claim_id}"] = ("claim_description", lang)
+        ds.text_origin[case_key] = ("claim_description", lang)
+        notes: list[tuple[str, str, str]] = []  # (role, body, origin pool)
 
-        # Complaint thread: 2 complaint notes, so the thread's majority is "complaints".
-        # Regular thread: 0-1 customer follow-up + 0-2 agent notes.
-        if is_complaint:
-            plan = [("customer", "complaint_note"), ("customer", "complaint_note")]
-        else:
-            plan = [("customer", "claim_note_customer")] * rng.choice((0, 1, 1))
-            plan += [("agent", "claim_note_agent")] * rng.choice((0, 1, 2))
-        when = datetime.combine(incident, datetime.min.time()) + timedelta(hours=9)
-        for author, pool_name in plan:
-            note_id += 1
-            when += timedelta(days=rng.randint(1, 20), minutes=rng.randint(0, 600))
+        def customer(pool_name: str) -> int:
             body = composer.compose(pool_name, lang, slots_for(cust, policy_no=pol.policy_number, claim_no=claim_no))
-            ds.claim_notes.append(ClaimNote(note_id, claim_id, author, when, body))
-            ds.text_origin[f"claim_notes:{note_id}"] = (pool_name, lang)
+            injected.extend(composer.last_pii)
+            notes.append(("customer", body, pool_name))
+            return composer.last_core
+
+        def reply(kind: str, core: int) -> None:
+            notes.append(("agent", reply_text(kind, lang, core, name, agent), f"{kind}_reply"))
+            injected.extend([("PERSON", name), ("PERSON", agent)])
+
+        def internal() -> None:
+            body = composer.compose("claim_note_agent", lang,
+                                    slots_for(cust, policy_no=pol.policy_number, claim_no=claim_no))
+            injected.extend(composer.last_pii)
+            notes.append(("internal", body, "claim_note_agent"))
+
+        if rng.random() < (0.5 if is_complaint else 0.75):
+            reply("claim_description", description_core)
+        if rng.random() < 0.6:
+            internal()
+        if is_complaint:
+            for _ in range(rng.choice((1, 2))):
+                reply("complaint_note", customer("complaint_note"))
+        elif rng.random() < 0.6:
+            core = customer("claim_note_customer")
+            if rng.random() < 0.85:
+                reply("claim_note_customer", core)
+        if rng.random() < 0.4:
+            internal()
+
+        when = datetime.combine(incident, datetime.min.time()) + timedelta(hours=9)
+        for role, body, origin in notes:
+            note_id += 1
+            when += timedelta(days=rng.randint(1, 12), minutes=rng.randint(0, 600))
+            ds.claim_notes.append(ClaimNote(note_id, claim_id, role, when, body))
+            ds.text_origin[f"claim_notes:{note_id}"] = (origin, lang)
 
     # Invoices (1-2 per policy), customer notes on a subset.
     iid = 0
@@ -726,7 +822,50 @@ def generate_crm(
             slots["invoice_no"] = inv.invoice_number
             slots["amount"] = f"{inv.amount:.2f}".replace(".", ",")
             text = composer.compose("invoice_note", cust.language, slots)
-            ds.invoices[i] = Invoice(**{**inv.__dict__, "customer_note": text})
+            injected_invoice = list(composer.last_pii)
+            answer = None
+            if rng.random() < 0.85:  # most customer notes got an answer from billing
+                name = f"{cust.first_name} {cust.last_name}"
+                agent = rng.choice(AGENTS[cust.language])
+                answer = reply_text("invoice_note", cust.language, composer.last_core, name, agent)
+                injected_invoice += [("PERSON", name), ("PERSON", agent)]
+            ds.invoices[i] = Invoice(**{**inv.__dict__, "customer_note": text, "agent_reply": answer})
             ds.text_origin[f"invoices:{inv.invoice_id}"] = ("invoice_note", cust.language)
+            ds.pii_injected[f"invoices:{inv.invoice_id}"] = injected_invoice
 
     return ds
+
+
+# --- Ground-truth PII manifest -------------------------------------------------
+
+
+def build_pii_manifest(ds: CrmDataset, seed: int) -> dict[str, Any]:
+    """Every PII value written into a free-text column, with the texts it is in.
+
+    ``value`` is the exact string as written, ``normalised`` the form the
+    ground-truth scan searches for, ``sources`` the "table:pk" texts holding it.
+    THIS IS A PII INDEX: data/generated/ is git-ignored.
+    """
+    sources_by_value: dict[tuple[str, str], set[str]] = {}
+    for key, injected in ds.pii_injected.items():
+        for pii_type, value in injected:
+            sources_by_value.setdefault((pii_type, value), set()).add(key)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "seed": seed,
+        "values": [
+            {"type": t, "value": v, "normalised": normalise(v), "sources": sorted(srcs)}
+            for (t, v), srcs in sorted(sources_by_value.items())
+        ],
+    }
+
+
+def write_pii_manifest(ds: CrmDataset, seed: int, path: str | Path) -> int:
+    """Replace the CRM entries of the shared manifest; returns the number of values."""
+    from src.synthetic.manifest import update_manifest
+
+    sources_by_value: dict[tuple[str, str], set[str]] = {}
+    for key, injected in ds.pii_injected.items():
+        for pii_type, value in injected:
+            sources_by_value.setdefault((pii_type, value), set()).add(key)
+    return update_manifest(path, "crm", seed, sources_by_value)

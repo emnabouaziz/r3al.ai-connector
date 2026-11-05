@@ -12,6 +12,7 @@ from typing import Any
 
 from src.connectors.base import SourceConnector
 from src.contracts import ItemRef, RawDocument
+from src.processing.clean import MESSAGE_SEPARATOR, split_messages
 from src.registry import register
 
 logger = logging.getLogger(__name__)
@@ -195,6 +196,48 @@ CORES: dict[tuple[str, str], tuple[str, str, str]] = {
     ),
 }
 
+# One agent reply per cell: every regular item is a 2-message thread
+# (customer message, agent reply), so the example builder has a real pair.
+AGENT_GREETING: dict[str, str] = {"nl": "Beste klant,", "fr": "Bonjour,", "en": "Hello,"}
+REPLIES: dict[tuple[str, str], str] = {
+    ("claims", "nl"): "Wij hebben uw schadeaangifte goed ontvangen en een expert aangesteld. Hij neemt binnen twee "
+                      "werkdagen contact met u op om de schade vast te stellen; daarna volgt de vergoeding.",
+    ("claims", "fr"): "Nous avons bien reçu votre déclaration de sinistre et désigné un expert. Il vous contactera sous "
+                      "deux jours ouvrables pour évaluer les dégâts, puis l'indemnisation suivra.",
+    ("claims", "en"): "We have registered your claim and appointed a loss adjuster. They will contact you within two "
+                      "working days to assess the damage, after which the compensation follows.",
+    ("policies", "nl"): "Volgens de algemene voorwaarden van uw polis is dit gedekt, met een vrijstelling van 250 euro "
+                        "per gebeurtenis. De uitsluitingen staan in artikel 5 van de voorwaarden.",
+    ("policies", "fr"): "Selon les conditions générales de votre police, ce risque est couvert, avec une franchise de "
+                        "250 euros par événement. Les exclusions figurent à l'article 5.",
+    ("policies", "en"): "Under the terms and conditions of your policy this is covered, with a deductible of 250 euros "
+                        "per event. The exclusions are listed in section 5 of the policy wording.",
+    ("billing", "nl"): "Wij hebben uw betaling teruggevonden en de herinnering geannuleerd. De volgende premie wordt via "
+                       "domiciliering geïnd op de vervaldag.",
+    ("billing", "fr"): "Nous avons retrouvé votre paiement et annulé le rappel. La prochaine prime sera prélevée par "
+                       "domiciliation à l'échéance.",
+    ("billing", "en"): "We found your payment and cancelled the reminder. The next premium will be collected by direct "
+                       "debit on the due date.",
+    ("onboarding", "nl"): "Uw aanvraag is verwerkt: de nieuwe polis gaat in op de eerste dag van volgende maand en u "
+                          "ontvangt het bijvoegsel binnen vijf werkdagen per e-mail.",
+    ("onboarding", "fr"): "Votre demande est traitée : le nouveau contrat prend cours le premier jour du mois prochain et "
+                          "l'avenant vous sera envoyé par e-mail sous cinq jours ouvrables.",
+    ("onboarding", "en"): "Your request has been processed: the new policy starts on the first day of next month and the "
+                          "endorsement will be e-mailed to you within five working days.",
+    ("complaints", "nl"): "Wij betreuren dat u ontevreden bent. Uw klacht is doorgegeven aan onze klachtendienst, die u "
+                          "binnen vijf werkdagen contacteert. U kunt zich ook tot de Ombudsman wenden.",
+    ("complaints", "fr"): "Nous regrettons votre insatisfaction. Votre plainte a été transmise à notre service des "
+                          "réclamations, qui vous contactera sous cinq jours ouvrables.",
+    ("complaints", "en"): "We are sorry you are dissatisfied. Your complaint has been passed to our complaints team, who "
+                          "will contact you within five working days.",
+    ("compliance", "nl"): "Uw verzoek op basis van de AVG is geregistreerd. Wij beantwoorden het binnen één maand en "
+                          "verwerken uw persoonsgegevens enkel voor het beheer van uw contracten.",
+    ("compliance", "fr"): "Votre demande au titre du RGPD est enregistrée. Nous y répondrons dans un délai d'un mois ; vos "
+                          "données personnelles servent uniquement à la gestion de vos contrats.",
+    ("compliance", "en"): "Your GDPR request has been registered. We will answer within one month; your personal data is "
+                          "only used to manage your contracts.",
+}
+
 OFF_TOPIC = (
     "Hi all, the team meeting is moved to Tuesday afternoon in room 3. Please bring your "
     "laptops and the slides for the quarterly review."
@@ -216,7 +259,9 @@ def _generate(seed: int) -> list[_FakeItem]:
     for i in range(N_REGULAR):
         domain, lang = CELLS[i % len(CELLS)]
         core = CORES[(domain, lang)][i // len(CELLS)]
-        text = f"{rng.choice(OPENERS[lang])}\n\n{core}\n\n{rng.choice(CLOSERS[lang])}"
+        customer = f"{rng.choice(OPENERS[lang])}\n\n{core}\n\n{rng.choice(CLOSERS[lang])}"
+        reply = f"{AGENT_GREETING[lang]}\n\n{REPLIES[(domain, lang)]}"
+        text = f"{customer}{MESSAGE_SEPARATOR}{reply}"
         regular.append(_FakeItem(f"doc-{i:03d}", f"thread-{i:03d}", "regular", text))
 
     items = list(regular)
@@ -281,5 +326,13 @@ class FakeConnector(SourceConnector):
             source_uri=ref.uri,
             content=item.text,
             mime_type="text/plain",
-            metadata={"thread_id": item.thread_id, "fake_kind": item.kind},
+            metadata={
+                "thread_id": item.thread_id,
+                "fake_kind": item.kind,
+                "kind": "thread",
+                "messages": [
+                    {"direction": "inbound" if i == 0 else "outbound"}
+                    for i in range(len(split_messages(item.text)))
+                ],
+            },
         )

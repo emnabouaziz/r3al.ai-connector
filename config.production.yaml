@@ -10,70 +10,95 @@ processing:
   domain_threshold: 0.15
   domain_margin: 0.05
 
+parse:
+  # Texts longer than this are split at headings, then paragraphs (one document = one group).
+  max_chunk_chars: 1200
+
 clean:
   min_chars: 20
 
+dedup:
+  # Jaccard on 5-gram shingles, after anonymisation (see src/processing/dedup_near.py).
+  near_threshold: 0.85
+
 anonymize:
-  pii_types: [person_name, email, phone, iban, national_id, address, policy_number]
+  # Placeholders imposed by the client spec: [PERSON] [EMAIL] [PHONE] [IBAN] [NATIONAL_ID] [ADDRESS]
+  pii_types: [PERSON, EMAIL, PHONE, IBAN, NATIONAL_ID, ADDRESS]
+  ner_model: xx_ent_wiki_sm  # pinned in pyproject.toml, loaded offline
 
 split:
+  # Floors, minimums and ratios are counted in EXAMPLES; groups stay whole.
   eval_ratio: 0.2
   eval_floor_per_domain: 25
   eval_floor_per_cell: 5
   max_share_per_domain: 0.35
+  min_train_per_domain: 20  # examples; takes precedence over eval floors
+  eval_ratio_max: 0.30  # hard ceiling on eval / kept
 
 verify:
   near_duplicate_threshold: 0.9
+  # Ground-truth PII index written by scripts/seed_crm.py (synthetic data only).
+  # Absent for real client data: the recall scan is then skipped, never failed.
+  pii_manifest: ${PII_MANIFEST:-./data/generated/pii_manifest.json}
 
 build:
-  system_prompt: >-
-    You are a customer-support assistant for a Belgian insurer. Answer in the
-    customer's language (Dutch, French or English), politely and precisely.
+  # System prompt: "You are the support assistant of <insurer_name> ...".
+  # The name comes from config only (synthetic placeholder by default).
+  insurer_name: ${INSURER_NAME:-Example Insurance SA}
+  # example_language: the system prompt is in the example's language (nl/fr/en),
+  # so the model learns to answer in the customer's language. Or: english.
+  system_prompt_language: example_language
+  # Rejection thresholds of the example builders (see the report's build table).
+  min_question_chars: 30
+  min_answer_chars: 40
+  max_placeholder_share: 0.12  # of the answer; real answers measured <= 0.09
+  min_chunk_chars: 80
+  max_answer_chars: 900
 
 sources:
   - name: crm_postgres
     type: sql
     config:
       dsn: ${POSTGRES_DSN}
-      # One row with non-empty text = one document. Rows sharing
-      # group_prefix + group_key form one group (never split train/eval).
-      # customers is reference data only (pure PII, no free text): not ingested.
-      tables:
-        claims:
+      # One CASE BUNDLE per claim / policy / invoice: its texts (in time order,
+      # each with its author_role) plus its typed fields. The facts builder
+      # turns them into grounded Q/A. Field lists hold NO PII by design
+      # (status, types, dates, amounts, references); the anonymiser still runs
+      # over every field value. customers is pure PII, never ingested.
+      cases:
+        claim:
+          table: claims
           id: claim_id
-          text: [description]
-          group_key: claim_id
           group_prefix: claim
-          meta: [claim_number, status, incident_date]
-        claim_notes:
-          id: note_id
-          text: [body]
-          group_key: claim_id
-          group_prefix: claim
-          meta: [author_type, created_at]
-        policies:
+          messages: [{column: description, role: customer}]
+          fields: [claim_number, claim_type, status, incident_date]
+          notes: {table: claim_notes, key: claim_id, id: note_id, text: body, role: author_role, order_by: created_at}
+        policy:
+          table: policies
           id: policy_id
-          text: [coverage_summary]
-          group_key: policy_id
           group_prefix: policy
-          meta: [policy_number, product]
-        invoices:
+          messages: [{column: coverage_summary, role: document}]
+          fields: [policy_number, product, status, start_date, annual_premium]
+        invoice:
+          table: invoices
           id: invoice_id
-          text: [customer_note]
-          group_key: invoice_id
           group_prefix: invoice
-          meta: [invoice_number, status]
+          messages: [{column: customer_note, role: customer}, {column: agent_reply, role: agent}]
+          fields: [invoice_number, status, issue_date, due_date, amount]
   - name: knowledge_docs
     type: files
-    enabled: false  # connector not implemented yet
     config:
-      root: ${DOCS_DIR:-./data/documents}
+      # Synthetic folder written by scripts/generate_documents.py.
+      root: ${DOCS_DIR:-./data/generated/documents}
+      extensions: [.pdf, .docx]
   - name: support_mailbox
     type: email
-    enabled: false  # connector not implemented yet
     config:
-      csv_path: ${TICKETS_CSV:-./data/tickets/tickets_export.csv}
-      eml_dir: ${EML_DIR:-./data/tickets/emails}
+      # Synthetic export written by scripts/generate_tickets.py.
+      csv_path: ${TICKETS_CSV:-./data/generated/tickets/tickets_export.csv}
+      eml_dir: ${EML_DIR:-./data/generated/tickets/emails}
+      # Sender domains of the insurer's agents (direction = outbound).
+      agent_domains: [assurance.example.be]
 
 output:
   dir: ./out

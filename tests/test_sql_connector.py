@@ -17,14 +17,14 @@ TABLES: dict[str, Any] = {
     "claims": {"id": "claim_id", "text": ["description"], "group_key": "claim_id",
                "group_prefix": "claim", "meta": ["status", "incident_date"]},
     "claim_notes": {"id": "note_id", "text": ["body"], "group_key": "claim_id",
-                    "group_prefix": "claim", "meta": ["author_type"]},
+                    "group_prefix": "claim", "meta": ["author_role"]},
 }
 
 
 def test_specs_are_parsed() -> None:
     specs = parse_table_specs(TABLES)
     assert [s.table for s in specs] == ["claims", "claim_notes"]
-    assert specs[1].columns == ("note_id", "claim_id", "body", "author_type")
+    assert specs[1].columns == ("note_id", "claim_id", "body", "author_role")
 
 
 @pytest.mark.parametrize(
@@ -56,7 +56,7 @@ def test_claim_and_its_notes_share_a_group() -> None:
     )
     note = row_to_document(
         "crm", "sql", specs["claim_notes"],
-        {"note_id": 99, "claim_id": 7, "body": "Expert aangesteld.", "author_type": "agent"},
+        {"note_id": 99, "claim_id": 7, "body": "Expert aangesteld.", "author_role": "agent"},
     )
     assert claim.id == "crm:claims:7" and claim.source_uri == "claims:7"
     assert claim.content == "Schade aan de wagen."
@@ -81,7 +81,8 @@ def test_live_database() -> None:
     connector.name = "crm_postgres"
     assert connector.test_connection()
     refs = list(connector.list_items())
-    assert len(refs) == 400  # 150 claims + 250 notes from the default seed
+    claims, notes = len([r for r in refs if r.item_id.startswith("claims:")]), len([r for r in refs if r.item_id.startswith("claim_notes:")])
+    assert claims == 85 and notes > claims  # default seed: 85 claims, several notes each
     doc = connector.fetch(refs[0])
     assert doc.id == "crm_postgres:claims:1"
     assert doc.content and doc.metadata["thread_id"] == "claim:1"
@@ -93,3 +94,44 @@ def test_live_database() -> None:
 def test_unreachable_database_fails_connection_test() -> None:
     connector = SqlConnector({"dsn": "postgresql://nobody:x@127.0.0.1:1/none", "tables": TABLES})
     assert connector.test_connection() is False
+
+
+CASES: dict[str, Any] = {
+    "claim": {"table": "claims", "id": "claim_id", "group_prefix": "claim",
+              "messages": [{"column": "description", "role": "customer"}],
+              "fields": ["claim_number", "claim_type", "status", "incident_date"],
+              "notes": {"table": "claim_notes", "key": "claim_id", "id": "note_id", "text": "body",
+                        "role": "author_role", "order_by": "created_at"}},
+}
+
+
+def test_case_bundle_keeps_texts_aligned_with_roles_and_typed_fields() -> None:
+    from src.connectors.sql import case_to_document, parse_case_specs
+    from src.processing.clean import split_messages
+
+    (spec,) = parse_case_specs(CASES)
+    doc = case_to_document(
+        "crm", "sql", spec,
+        {"claim_id": 7, "description": "Waterschade in de keuken.", "claim_number": "CLM-1", "claim_type":
+         "water_damage", "status": "in_progress", "incident_date": date(2025, 3, 12)},
+        [{"claim_id": 7, "note_id": 1, "body": "Expert aangesteld.", "author_role": "internal",
+          "created_at": date(2025, 3, 13)},
+         {"claim_id": 7, "note_id": 2, "body": "Wij sturen een expert.", "author_role": "agent",
+          "created_at": date(2025, 3, 14)}],
+    )
+    assert doc.id == "crm:claims:7" and doc.source_uri == "claims:7"
+    assert doc.metadata["kind"] == "case" and doc.metadata["thread_id"] == "claim:7"
+    assert [n["author_role"] for n in doc.metadata["notes"]] == ["customer", "internal", "agent"]
+    assert split_messages(str(doc.content))[2] == "Wij sturen een expert."
+    assert doc.metadata["fields"]["incident_date"] == "2025-03-12"
+
+
+@pytest.mark.skipif(not LIVE_DSN, reason="set R3AL_TEST_POSTGRES_DSN to run against a seeded DB")
+def test_live_case_bundles() -> None:
+    connector = SqlConnector({"dsn": LIVE_DSN, "cases": CASES})
+    connector.name = "crm_postgres"
+    assert connector.test_connection()
+    docs = [connector.fetch(r) for r in connector.list_items()]
+    assert len(docs) == 85
+    roles = {n["author_role"] for d in docs for n in d.metadata["notes"]}
+    assert roles == {"customer", "agent", "internal"}
